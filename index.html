@@ -299,6 +299,48 @@ const CONFIG = {
     FEATURE_BUY_FREE_SPINS: 7
 };
 
+// ============================================================
+// MODULE: SUPABASE STATS TRACKING
+// ============================================================
+const SUPABASE_URL = 'https://gvfudunduphmzcdqmijz.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_BzR_3nBqRbe9w1BfB6-Rww_Cx3qHbj9';
+const SESSION_ID = crypto.randomUUID ? crypto.randomUUID() : ('s-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+let spinStats = { clustersFound: 0, isFeatureBuy: false, freeSpinsTriggered: false };
+
+function resetSpinStats() {
+    spinStats = { clustersFound: 0, isFeatureBuy: false, freeSpinsTriggered: false };
+}
+
+function trackSpin() {
+    const payload = {
+        session_id: SESSION_ID,
+        bet_amount: currentBet,
+        total_win: totalRoundWin,
+        win_multiplier: totalRoundWin > 0 ? (totalRoundWin / currentBet) : 0,
+        max_cascade_level: cascadeLevel,
+        max_multiplier: globalMultiplier,
+        clusters_found: spinStats.clustersFound,
+        is_free_spin: freeSpins.active,
+        is_feature_buy: spinStats.isFeatureBuy,
+        is_big_win: totalRoundWin > currentBet * CONFIG.BIG_WIN_THRESHOLD,
+        free_spins_triggered: spinStats.freeSpinsTriggered,
+        balance_after: balance + totalRoundWin,
+        user_agent: navigator.userAgent.slice(0, 255)
+    };
+
+    fetch(SUPABASE_URL + '/rest/v1/game_sessions', {
+        method: 'POST',
+        headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify(payload)
+    }).catch(() => {}); // fire-and-forget, don't block gameplay
+}
+
 const SYMBOL_DEFS = [
     { id: 0, name: 'blueGem',    type: 'gem',     color: '#4488ff', weight: 15, pays: { 5:0.4, 8:1.2, 12:4,  16:16 } },
     { id: 1, name: 'greenGem',   type: 'gem',     color: '#44dd66', weight: 15, pays: { 5:0.5, 8:1.5, 12:5,  16:20 } },
@@ -1494,6 +1536,7 @@ function enterState(newState) {
         const clusters = findClusters(grid);
         if (clusters.length > 0) {
             currentClusters = clusters;
+            spinStats.clustersFound += clusters.length;
             let roundWin = 0;
             for (const cl of clusters) {
                 roundWin += calculatePayout(cl, currentBet, globalMultiplier);
@@ -1509,8 +1552,12 @@ function enterState(newState) {
             lastWin = totalRoundWin;
             balance += totalRoundWin;
 
+            // Track this completed spin to Supabase
+            trackSpin();
+
             // Check if free spins should trigger now
             if (window._pendingFS) {
+                spinStats.freeSpinsTriggered = true;
                 const fs = window._pendingFS;
                 window._pendingFS = null;
                 freeSpins = { active: true, remaining: fs.count, totalWin: 0 };
@@ -1703,6 +1750,7 @@ function doSpin() {
     if (currentState !== State.IDLE) return;
     if (balance < currentBet) return;
     audio.init();
+    resetSpinStats();
     balance -= currentBet;
     updateUI();
     enterState(State.SPINNING);
@@ -1711,6 +1759,7 @@ function doSpin() {
 function doFreeSpin() {
     if (currentState !== State.FREE_IDLE) return;
     audio.init();
+    resetSpinStats();
     // Free spin - no bet deduction
     totalRoundWin = 0;
     cascadeLevel = 0;
@@ -1725,6 +1774,8 @@ function doFeatureBuy() {
     const cost = currentBet * CONFIG.FEATURE_BUY_MULTIPLIER;
     if (balance < cost) return;
     audio.init();
+    resetSpinStats();
+    spinStats.isFeatureBuy = true;
     balance -= cost;
     totalRoundWin = 0;
     globalMultiplier = 1;
