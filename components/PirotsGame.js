@@ -85,6 +85,12 @@ export default function PirotsGame() {
     const SCATTER_ID = 9;
     const TOTAL_WEIGHT = SYMBOL_DEFS.reduce((s, d) => s + d.weight, 0);
 
+    // Color pairing: gem ↔ bird of same color
+    const GEM_TO_BIRD = { 0: 4, 1: 5, 2: 6, 3: 7 };
+    const BIRD_TO_GEM = { 4: 0, 5: 1, 6: 2, 7: 3 };
+    const GEM_IDS = [0, 1, 2, 3];
+    const BIRD_IDS = [4, 5, 6, 7];
+
     // ============================================================
     // MODULE: UTILITY FUNCTIONS
     // ============================================================
@@ -709,7 +715,7 @@ export default function PirotsGame() {
     function findClusters(grid) {
         const size = grid.size;
         const clusters = [];
-        for (let symId = 0; symId <= 7; symId++) {
+        for (let symId = 0; symId <= 3; symId++) { // gems only — birds are activators, not cluster members
             const visited = Array.from({length:size}, ()=>new Array(size).fill(false));
             for (let r = 0; r < size; r++) {
                 for (let c = 0; c < size; c++) {
@@ -763,6 +769,109 @@ export default function PirotsGame() {
         return pay * bet * multiplier;
     }
 
+    function calculateBirdPayout(cluster, birdId, bet, multiplier) {
+        const birdSym = SYMBOL_DEFS.find(s => s.id === birdId);
+        if (!birdSym || !birdSym.pays) return 0;
+        const tiers = Object.keys(birdSym.pays).map(Number).sort((a,b) => b - a);
+        let pay = 0;
+        for (const t of tiers) {
+            if (cluster.size >= t) { pay = birdSym.pays[t]; break; }
+        }
+        return pay * bet * multiplier;
+    }
+
+    function findAdjacentBirds(grid, clusters) {
+        const clusterCellSets = clusters.map(cl => {
+            const s = new Set();
+            for (const [r,c] of cl.cells) s.add(r * 100 + c);
+            return s;
+        });
+
+        const clusterBirdCandidates = clusters.map((cl, idx) => {
+            const matchingBirdId = GEM_TO_BIRD[cl.symbolId];
+            if (matchingBirdId === undefined) return [];
+            const adjacentBirds = [];
+            const seen = new Set();
+            for (const [r,c] of cl.cells) {
+                for (const [nr,nc] of [[r-1,c],[r+1,c],[r,c-1],[r,c+1]]) {
+                    if (nr<0 || nr>=grid.size || nc<0 || nc>=grid.size) continue;
+                    const key = nr * 100 + nc;
+                    if (seen.has(key)) continue;
+                    if (clusterCellSets[idx].has(key)) continue;
+                    const cell = grid.get(nr, nc);
+                    if (cell && cell.id === matchingBirdId) {
+                        seen.add(key);
+                        let minDist = Infinity;
+                        for (const [cr,cc] of cl.cells) {
+                            const d = Math.abs(nr-cr) + Math.abs(nc-cc);
+                            if (d < minDist) minDist = d;
+                        }
+                        adjacentBirds.push({ row: nr, col: nc, dist: minDist });
+                    }
+                }
+            }
+            adjacentBirds.sort((a,b) => a.dist - b.dist);
+            return adjacentBirds;
+        });
+
+        const validClusters = [];
+        const birdAssignments = [];
+
+        for (let i = 0; i < clusters.length; i++) {
+            if (clusterBirdCandidates[i].length > 0) {
+                const bird = clusterBirdCandidates[i][0];
+                validClusters.push(clusters[i]);
+                birdAssignments.push({
+                    row: bird.row,
+                    col: bird.col,
+                    birdId: GEM_TO_BIRD[clusters[i].symbolId]
+                });
+            }
+        }
+
+        const birdMap = new Map();
+        for (let i = 0; i < validClusters.length; i++) {
+            const key = `${birdAssignments[i].row},${birdAssignments[i].col}`;
+            if (!birdMap.has(key)) {
+                birdMap.set(key, { bird: birdAssignments[i], clusters: [] });
+            }
+            birdMap.get(key).clusters.push(validClusters[i]);
+        }
+
+        const result = [];
+        for (const [, entry] of birdMap) {
+            const allCells = [];
+            for (const cl of entry.clusters) {
+                for (const cell of cl.cells) allCells.push(cell);
+            }
+            result.push({
+                bird: entry.bird,
+                clusters: entry.clusters,
+                allCells: allCells
+            });
+        }
+        return result;
+    }
+
+    function computeEatingOrder(birdRow, birdCol, gemCells) {
+        const remaining = gemCells.map(([r,c]) => ({r, c}));
+        const order = [];
+        let curR = birdRow, curC = birdCol;
+        while (remaining.length > 0) {
+            let bestIdx = 0;
+            let bestDist = Infinity;
+            for (let i = 0; i < remaining.length; i++) {
+                const d = Math.abs(remaining[i].r - curR) + Math.abs(remaining[i].c - curC);
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+            const next = remaining.splice(bestIdx, 1)[0];
+            order.push([next.r, next.c]);
+            curR = next.r;
+            curC = next.c;
+        }
+        return order;
+    }
+
     function countScatters(grid) {
         let count = 0;
         const positions = [];
@@ -812,6 +921,7 @@ export default function PirotsGame() {
         DROPPING: 'DROPPING',
         EVALUATING: 'EVALUATING',
         WIN_DISPLAY: 'WIN_DISPLAY',
+        BIRD_EATING: 'BIRD_EATING',
         REMOVING: 'REMOVING',
         CASCADING: 'CASCADING',
         FREE_TRIGGER: 'FREE_TRIGGER',
@@ -844,6 +954,9 @@ export default function PirotsGame() {
     let canvasW = 0, canvasH = 0;
     let dpr = 1;
     let ambientEmitter = null;
+    let birdEatData = [];
+    let birdOverlays = [];
+    let overlayAnims = [];
 
     // ============================================================
     // MODULE: BACKGROUND RENDERER
@@ -982,6 +1095,7 @@ export default function PirotsGame() {
             for (let c = 0; c < grid.size; c++) {
                 const cell = grid.get(r,c);
                 if (!cell || cell.id === null || cell.id === undefined) continue;
+                if (cell._hidden) continue; // bird being animated as overlay
                 const anim = getCellAnim(r, c);
                 const pos = getCellPos(r, c);
                 let x = pos.x, y = pos.y;
@@ -1007,7 +1121,8 @@ export default function PirotsGame() {
                 }
                 if (currentState === State.WIN_DISPLAY && currentClusters.length > 0) {
                     const inCluster = currentClusters.some(cl => cl.cells.some(([cr,cc])=>cr===r&&cc===c));
-                    if (!inCluster) alpha *= 0.4;
+                    const isPairedBird = birdEatData.some(m => m.bird.row === r && m.bird.col === c);
+                    if (!inCluster && !isPairedBird) alpha *= 0.4;
                 }
                 const cached = symbolCache[cell.id];
                 if (!cached) continue;
@@ -1020,15 +1135,37 @@ export default function PirotsGame() {
                 ctx.restore();
             }
         }
+
+        // Draw bird overlays on top (during BIRD_EATING animation)
+        for (const ov of birdOverlays) {
+            if (!ov.visible) continue;
+            const cached = symbolCache[ov.birdId];
+            if (!cached) continue;
+            ctx.save();
+            ctx.globalAlpha = 1;
+            const cx = ov.x + cellSize/2;
+            const cy = ov.y + cellSize/2 - (ov.arcOffset || 0);
+            // Slight scale bounce during hop
+            const hopScale = 1 + Math.sin((ov.arcOffset || 0) / cellSize * Math.PI) * 0.15;
+            ctx.translate(cx, cy);
+            ctx.scale(hopScale, hopScale);
+            ctx.drawImage(cached, -cellSize/2, -cellSize/2, cellSize, cellSize);
+            ctx.restore();
+        }
     }
 
     function drawWinGlows(ctx, time) {
-        if (currentState !== State.WIN_DISPLAY || currentClusters.length === 0) return;
+        if (currentState !== State.WIN_DISPLAY && currentState !== State.BIRD_EATING) return;
+        if (currentClusters.length === 0 && birdEatData.length === 0) return;
         const pulse = 0.5 + 0.5*Math.sin(time*8);
+
+        // Glow gem cluster cells
         for (const cluster of currentClusters) {
             const sym = SYMBOL_DEFS[cluster.symbolId];
             const color = sym ? sym.color : '#ffcc00';
             for (const [r,c] of cluster.cells) {
+                const cell = grid.get(r,c);
+                if (!cell || cell.id === null || cell.id === undefined) continue; // already eaten
                 const pos = getCellPos(r,c);
                 ctx.save();
                 ctx.shadowColor = color;
@@ -1039,6 +1176,26 @@ export default function PirotsGame() {
                 ctx.stroke();
                 ctx.restore();
             }
+        }
+
+        // Glow rings around paired birds
+        for (const match of birdEatData) {
+            const birdSym = SYMBOL_DEFS[match.bird.birdId];
+            const color = birdSym ? birdSym.color : '#ffcc00';
+            const birdCell = grid.get(match.bird.row, match.bird.col);
+            if (!birdCell || birdCell._hidden) continue; // bird is being animated as overlay, skip grid glow
+            const pos = getCellPos(match.bird.row, match.bird.col);
+            ctx.save();
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 16 + pulse*12;
+            ctx.strokeStyle = `rgba(${hexToRgb(color)}, ${0.7 + pulse*0.3})`;
+            ctx.lineWidth = 4;
+            const cx = pos.x + cellSize/2, cy = pos.y + cellSize/2;
+            const radius = cellSize * 0.5 + 3 + pulse * 3;
+            ctx.beginPath();
+            ctx.arc(cx, cy, radius, 0, Math.PI*2);
+            ctx.stroke();
+            ctx.restore();
         }
     }
 
@@ -1069,6 +1226,36 @@ export default function PirotsGame() {
             cellAnims = cellAnims.filter(x => x !== a);
             if (a.onDone) a.onDone();
         }
+
+        // Overlay animations (bird eating hops)
+        const overlayDone = [];
+        for (const a of overlayAnims) {
+            a.elapsed += dt;
+            let t = clamp(a.elapsed / a.duration, 0, 1);
+            const eased = a.easing(t);
+            a.overlay.x = lerp(a.fromX, a.toX, eased);
+            a.overlay.y = lerp(a.fromY, a.toY, eased);
+            a.overlay.arcOffset = Math.sin(t * Math.PI) * cellSize * 0.5;
+            if (a.elapsed >= a.duration) {
+                a.overlay.x = a.toX;
+                a.overlay.y = a.toY;
+                a.overlay.arcOffset = 0;
+                overlayDone.push(a);
+            }
+        }
+        for (const a of overlayDone) {
+            overlayAnims = overlayAnims.filter(x => x !== a);
+            if (a.onDone) a.onDone();
+        }
+    }
+
+    function addOverlayAnim(overlay, fromX, fromY, toX, toY, duration, easing, onDone) {
+        overlayAnims.push({
+            overlay, fromX, fromY, toX, toY,
+            elapsed: 0, duration,
+            easing: easing || Easing.easeOutBack,
+            onDone
+        });
     }
 
     // ============================================================
@@ -1146,21 +1333,31 @@ export default function PirotsGame() {
                     freeSpins.remaining += (sc.count - 3 + 1) * CONFIG.SCATTER_FREE_SPINS_EXTRA;
                 }
             }
-            const clusters = findClusters(grid);
-            if (clusters.length > 0) {
-                currentClusters = clusters;
-                spinStats.clustersFound += clusters.length;
+            const allGemClusters = findClusters(grid);
+            const birdMatches = findAdjacentBirds(grid, allGemClusters);
+
+            if (birdMatches.length > 0) {
+                currentClusters = [];
+                for (const match of birdMatches) {
+                    for (const cl of match.clusters) currentClusters.push(cl);
+                }
+                birdEatData = birdMatches;
+
+                spinStats.clustersFound += currentClusters.length;
                 let roundWin = 0;
-                for (const cl of clusters) {
-                    roundWin += calculatePayout(cl, currentBet, globalMultiplier);
+                for (const match of birdMatches) {
+                    for (const cl of match.clusters) {
+                        roundWin += calculateBirdPayout(cl, match.bird.birdId, currentBet, globalMultiplier);
+                    }
                 }
                 totalRoundWin += roundWin;
                 if (freeSpins.active) freeSpins.totalWin += roundWin;
-                globalMultiplier += clusters.length;
+                globalMultiplier += currentClusters.length;
                 cascadeLevel++;
                 enterState(State.WIN_DISPLAY);
             } else {
                 currentClusters = [];
+                birdEatData = [];
                 lastWin = totalRoundWin;
                 balance += totalRoundWin;
                 trackSpin();
@@ -1195,8 +1392,9 @@ export default function PirotsGame() {
             audio.playWin(maxSize);
             const dur = (turboMode ? 0.4 : 0.8) / speedMul();
             setTimeout(() => {
-                if (currentState === State.WIN_DISPLAY) enterState(State.REMOVING);
+                if (currentState === State.WIN_DISPLAY) enterState(State.BIRD_EATING);
             }, dur * 1000);
+            // Shard particles on gem clusters
             for (const cl of currentClusters) {
                 const sym = SYMBOL_DEFS[cl.symbolId];
                 for (const [r,c] of cl.cells) {
@@ -1206,43 +1404,109 @@ export default function PirotsGame() {
                         x: px, y: py, count: 3, speed: 80, lifetime: 0.8,
                         color: sym ? sym.color : '#fff',
                         gravity: 100, spread: 10, scale: 0.8, shrink: 0.3,
-                        drawFn: sym && sym.type === 'bird' ? particleDrawFns.feather :
-                                sym && sym.type === 'gem' ? particleDrawFns.shard : particleDrawFns.sparkle
+                        drawFn: particleDrawFns.shard
                     });
                 }
+            }
+            // Feather particles on paired birds
+            for (const match of birdEatData) {
+                const birdPos = getCellPos(match.bird.row, match.bird.col);
+                const birdSym = SYMBOL_DEFS[match.bird.birdId];
+                particles.emit({
+                    x: birdPos.x + cellSize/2, y: birdPos.y + cellSize/2,
+                    count: 4, speed: 40, lifetime: 0.6,
+                    color: birdSym.color, gravity: 50, spread: 5, scale: 0.6, shrink: 0.3,
+                    drawFn: particleDrawFns.feather
+                });
             }
             updateUI();
             break;
         }
 
-        case State.REMOVING: {
+        case State.BIRD_EATING: {
             cellAnims = [];
-            pendingAnimsDone = 0;
-            const allCells = currentClusters.flatMap(cl => cl.cells);
-            pendingAnimsTotal = allCells.length;
-            shake.trigger(4, 0.15);
-            for (const [r,c] of allCells) {
-                addCellAnim(r, c, 'scaleOut', 1, 0, 0.2/speedMul(), Easing.easeInCubic, animDoneCheck);
-            }
-            onAllAnimsDone = () => {
-                const wildPositions = [];
-                for (const cl of currentClusters) {
-                    const wildPos = cl.cells[randInt(0, cl.cells.length-1)];
-                    wildPositions.push(wildPos);
-                    for (const [r,c] of cl.cells) grid.clear(r,c);
-                    grid.set(wildPos[0], wildPos[1], { id: WILD_ID });
-                }
-                for (const wp of wildPositions) {
-                    const pos = getCellPos(wp[0], wp[1]);
-                    particles.emit({
-                        x: pos.x+cellSize/2, y: pos.y+cellSize/2, count: 8, speed: 60,
-                        lifetime: 0.6, color: '#ffcc00', gravity: 50, spread: 5, scale: 0.7,
-                        drawFn: particleDrawFns.sparkle
-                    });
-                }
+            overlayAnims = [];
+            birdOverlays = [];
+
+            let completedBirds = 0;
+            const totalBirds = birdEatData.length;
+
+            if (totalBirds === 0) {
                 currentClusters = [];
                 enterState(State.CASCADING);
-            };
+                break;
+            }
+
+            shake.trigger(3, 0.2);
+
+            for (const match of birdEatData) {
+                match.eatingOrder = computeEatingOrder(match.bird.row, match.bird.col, match.allCells);
+                const birdId = match.bird.birdId;
+                const order = match.eatingOrder;
+
+                const birdPos = getCellPos(match.bird.row, match.bird.col);
+                const overlay = {
+                    birdId, x: birdPos.x, y: birdPos.y, arcOffset: 0, visible: true
+                };
+                birdOverlays.push(overlay);
+
+                // Hide bird at grid position (drawn as overlay instead)
+                const birdCell = grid.get(match.bird.row, match.bird.col);
+                if (birdCell) birdCell._hidden = true;
+
+                const speed = speedMul();
+                const HOP_DUR = 0.18 / speed;
+
+                function chainHop(index) {
+                    if (index >= order.length) {
+                        // All gems eaten — place bird at final position
+                        const [finalR, finalC] = order[order.length - 1];
+                        // Clear bird from original position if different
+                        const origCell = grid.get(match.bird.row, match.bird.col);
+                        if (origCell && origCell._hidden) {
+                            grid.clear(match.bird.row, match.bird.col);
+                        }
+                        grid.set(finalR, finalC, { id: birdId });
+                        overlay.visible = false;
+
+                        completedBirds++;
+                        if (completedBirds >= totalBirds) {
+                            birdOverlays = [];
+                            birdEatData = [];
+                            currentClusters = [];
+                            enterState(State.CASCADING);
+                        }
+                        return;
+                    }
+                    const [targetR, targetC] = order[index];
+                    const targetPos = getCellPos(targetR, targetC);
+                    addOverlayAnim(overlay, overlay.x, overlay.y, targetPos.x, targetPos.y, HOP_DUR, Easing.easeOutBack, () => {
+                        // Bird reached gem — emit particles and clear
+                        const gemCell = grid.get(targetR, targetC);
+                        const gemSym = gemCell ? SYMBOL_DEFS[gemCell.id] : SYMBOL_DEFS[0];
+                        const isWild = gemCell && gemCell.id === WILD_ID;
+                        particles.emit({
+                            x: targetPos.x + cellSize/2, y: targetPos.y + cellSize/2,
+                            count: 5, speed: 100, lifetime: 0.5,
+                            color: isWild ? '#ffcc00' : (gemSym ? gemSym.color : '#fff'),
+                            gravity: 120, spread: 8, scale: 0.7, shrink: 0.4,
+                            drawFn: isWild ? particleDrawFns.sparkle : particleDrawFns.shard
+                        });
+                        audio.playTone(400 + index * 60, 0.08, 'triangle', 0.08);
+                        grid.clear(targetR, targetC);
+                        // Brief pause then next hop
+                        setTimeout(() => chainHop(index + 1), 40 / speed);
+                    });
+                }
+                chainHop(0);
+            }
+            break;
+        }
+
+        case State.REMOVING: {
+            // Legacy state — gems are now cleared during BIRD_EATING
+            currentClusters = [];
+            enterState(State.CASCADING);
             break;
         }
 
@@ -1380,14 +1644,15 @@ export default function PirotsGame() {
 
     function seedCluster(grid) {
         const r0 = randInt(0, grid.size-1), c0 = randInt(0, grid.size-1);
-        let symId;
-        do { symId = randomSymbolId(); } while (symId === WILD_ID || symId === SCATTER_ID);
+        // Only seed gem clusters (IDs 0-3) — birds are activators, not cluster members
+        const gemId = GEM_IDS[randInt(0, GEM_IDS.length - 1)];
         const clusterSize = randInt(5, 9);
         const visited = new Set();
         const queue = [[r0,c0]];
         visited.add(`${r0},${c0}`);
-        grid.set(r0, c0, { id: symId });
+        grid.set(r0, c0, { id: gemId });
         let placed = 1;
+        const clusterCells = [[r0, c0]];
         while (queue.length > 0 && placed < clusterSize) {
             const [cr,cc] = queue.shift();
             const neighbors = [[cr-1,cc],[cr+1,cc],[cr,cc-1],[cr,cc+1]];
@@ -1397,10 +1662,28 @@ export default function PirotsGame() {
                 if (nr<0||nr>=grid.size||nc<0||nc>=grid.size) continue;
                 if (visited.has(`${nr},${nc}`)) continue;
                 visited.add(`${nr},${nc}`);
-                grid.set(nr, nc, { id: symId });
+                grid.set(nr, nc, { id: gemId });
                 queue.push([nr,nc]);
+                clusterCells.push([nr, nc]);
                 placed++;
             }
+        }
+
+        // Place a matching-color bird adjacent to the cluster so it can actually pay
+        const birdId = GEM_TO_BIRD[gemId];
+        const dirs = [[-1,0],[1,0],[0,-1],[0,1]];
+        const adjCandidates = [];
+        for (const [cr, cc] of clusterCells) {
+            for (const [dr, dc] of dirs) {
+                const nr = cr + dr, nc = cc + dc;
+                if (nr < 0 || nr >= grid.size || nc < 0 || nc >= grid.size) continue;
+                if (visited.has(`${nr},${nc}`)) continue;
+                adjCandidates.push([nr, nc]);
+            }
+        }
+        if (adjCandidates.length > 0) {
+            const [br, bc] = adjCandidates[randInt(0, adjCandidates.length - 1)];
+            grid.set(br, bc, { id: birdId });
         }
     }
 
