@@ -1,0 +1,202 @@
+/* === RESET & LAYOUT === */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0a2e; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; user-select: none; }
+
+canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+#bgCanvas { z-index: 0; }
+#gameCanvas { z-index: 1; }
+
+/* === UI OVERLAY === */
+#ui-overlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;
+    display: flex; flex-direction: column; justify-content: space-between;
+    pointer-events: none;
+}
+
+/* === TOP BAR === */
+#top-bar {
+    display: flex; align-items: center; justify-content: center; gap: 30px;
+    padding: 10px 20px;
+    pointer-events: none;
+}
+#game-logo {
+    font-size: 36px; font-weight: 900; letter-spacing: 6px;
+    background: linear-gradient(180deg, #ffee88, #ffaa00, #cc6600);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+    text-shadow: none;
+}
+#free-spins-counter {
+    font-size: 20px; font-weight: 700; color: #00ffaa;
+    text-shadow: 0 0 10px rgba(0,255,170,0.5);
+    display: none;
+}
+#free-spins-counter.visible { display: block; }
+#multiplier-display {
+    font-size: 28px; font-weight: 900; color: #ff6600;
+    text-shadow: 0 0 15px rgba(255,102,0,0.6);
+    display: none;
+}
+#multiplier-display.visible { display: block; }
+
+/* === WIN DISPLAY (center overlay) === */
+#win-display {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; pointer-events: none; display: none; z-index: 10;
+}
+#win-display.visible { display: block; }
+#win-label {
+    font-size: 24px; font-weight: 700; color: #ffcc00;
+    text-shadow: 0 0 20px rgba(255,204,0,0.8);
+    letter-spacing: 4px;
+}
+#win-amount {
+    font-size: 52px; font-weight: 900; color: #ffffff;
+    text-shadow: 0 0 30px rgba(255,204,0,0.8), 0 2px 6px rgba(0,0,0,0.7);
+}
+
+/* === BIG WIN OVERLAY === */
+#big-win-overlay {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    display: none; align-items: center; justify-content: center;
+    flex-direction: column; z-index: 15; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0.4) 0%, rgba(0,0,0,0.7) 100%);
+}
+#big-win-overlay.visible { display: flex; }
+#big-win-text {
+    font-size: 72px; font-weight: 900; letter-spacing: 8px;
+    background: linear-gradient(180deg, #ffffff, #ffee44, #ffaa00);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 4px 8px rgba(0,0,0,0.6));
+    animation: bigWinPulse 0.5s ease-in-out infinite alternate;
+}
+#big-win-amount {
+    font-size: 56px; font-weight: 900; color: #ffffff;
+    text-shadow: 0 0 40px rgba(255,204,0,1), 0 4px 8px rgba(0,0,0,0.7);
+    margin-top: 10px;
+}
+@keyframes bigWinPulse {
+    from { transform: scale(1); }
+    to { transform: scale(1.05); }
+}
+
+/* === BOTTOM CONTROL PANEL === */
+#control-panel {
+    pointer-events: all;
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    padding: 10px 16px 14px;
+    background: linear-gradient(to top, rgba(0,0,0,0.85), rgba(0,0,0,0.4) 80%, transparent);
+}
+.panel-section {
+    display: flex; flex-direction: column; align-items: center; min-width: 80px;
+}
+.panel-label {
+    font-size: 10px; font-weight: 600; color: #888; letter-spacing: 2px; text-transform: uppercase;
+}
+.panel-value {
+    font-size: 18px; font-weight: 700; color: #ffffff; margin-top: 2px;
+}
+.panel-value.win-highlight { color: #ffcc00; }
+
+/* Buttons */
+.btn-control {
+    width: 40px; height: 40px; border-radius: 50%; border: 2px solid #555;
+    background: linear-gradient(135deg, #333, #222); color: #aaa;
+    font-size: 20px; font-weight: 700; cursor: pointer; display: flex;
+    align-items: center; justify-content: center;
+    transition: all 0.15s;
+}
+.btn-control:hover { border-color: #ffcc00; color: #ffcc00; background: linear-gradient(135deg, #444, #333); }
+.btn-control:active { transform: scale(0.9); }
+.btn-control:disabled { opacity: 0.3; cursor: not-allowed; }
+.btn-control.active { border-color: #00ff88; color: #00ff88; }
+
+.btn-spin {
+    width: 72px; height: 72px; border-radius: 50%;
+    border: 3px solid #ffcc00;
+    background: linear-gradient(135deg, #ff6600, #ff3300);
+    color: #fff; font-size: 15px; font-weight: 800; letter-spacing: 1px;
+    cursor: pointer;
+    box-shadow: 0 0 20px rgba(255,102,0,0.4), inset 0 -3px 6px rgba(0,0,0,0.3);
+    transition: all 0.15s;
+}
+.btn-spin:hover { transform: scale(1.06); box-shadow: 0 0 30px rgba(255,102,0,0.7), inset 0 -3px 6px rgba(0,0,0,0.3); }
+.btn-spin:active { transform: scale(0.94); }
+.btn-spin:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+.btn-spin.free-spin { background: linear-gradient(135deg, #00cc66, #009944); border-color: #00ffaa; box-shadow: 0 0 20px rgba(0,204,102,0.4); }
+
+.divider { width: 1px; height: 40px; background: #333; margin: 0 6px; }
+
+/* === FREE SPINS SUMMARY OVERLAY === */
+#fs-summary {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    display: none; align-items: center; justify-content: center; flex-direction: column;
+    z-index: 20; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,20,40,0.85) 0%, rgba(0,0,0,0.95) 100%);
+}
+#fs-summary.visible { display: flex; pointer-events: all; }
+#fs-summary-title {
+    font-size: 32px; font-weight: 800; color: #00ffaa; letter-spacing: 4px;
+    text-shadow: 0 0 20px rgba(0,255,170,0.5);
+}
+#fs-summary-amount {
+    font-size: 64px; font-weight: 900; color: #ffcc00;
+    text-shadow: 0 0 40px rgba(255,204,0,0.7);
+    margin: 16px 0;
+}
+#fs-summary-btn {
+    pointer-events: all; padding: 12px 40px; border-radius: 30px;
+    border: 2px solid #ffcc00; background: linear-gradient(135deg, #ff6600, #ff3300);
+    color: #fff; font-size: 18px; font-weight: 700; cursor: pointer;
+    margin-top: 10px; letter-spacing: 2px;
+}
+#fs-summary-btn:hover { transform: scale(1.05); }
+
+/* === FEATURE BUY === */
+.btn-buy {
+    height: 40px; padding: 0 14px; border-radius: 20px;
+    border: 2px solid #00ddff;
+    background: linear-gradient(135deg, #0066aa, #003366);
+    color: #00eeff; font-size: 12px; font-weight: 800; letter-spacing: 1px;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+}
+.btn-buy:hover { border-color: #44ffff; color: #ffffff; background: linear-gradient(135deg, #0088cc, #004488); box-shadow: 0 0 15px rgba(0,200,255,0.3); }
+.btn-buy:active { transform: scale(0.93); }
+.btn-buy:disabled { opacity: 0.3; cursor: not-allowed; }
+
+#buy-modal {
+    position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+    display: none; align-items: center; justify-content: center; flex-direction: column;
+    z-index: 25; pointer-events: none;
+    background: radial-gradient(ellipse at center, rgba(0,15,40,0.9) 0%, rgba(0,0,0,0.96) 100%);
+}
+#buy-modal.visible { display: flex; pointer-events: all; }
+#buy-modal-title {
+    font-size: 28px; font-weight: 800; color: #00eeff; letter-spacing: 3px;
+    text-shadow: 0 0 15px rgba(0,220,255,0.5);
+}
+#buy-modal-desc {
+    font-size: 16px; color: #aaa; margin: 12px 0 6px; text-align: center; line-height: 1.5;
+}
+#buy-modal-cost {
+    font-size: 42px; font-weight: 900; color: #ffcc00;
+    text-shadow: 0 0 25px rgba(255,204,0,0.6);
+    margin: 8px 0 20px;
+}
+#buy-modal-btns { display: flex; gap: 16px; }
+.buy-modal-btn {
+    padding: 12px 36px; border-radius: 28px; font-size: 16px; font-weight: 700;
+    cursor: pointer; letter-spacing: 1px; transition: all 0.15s;
+}
+#buy-confirm {
+    border: 2px solid #00ffaa; background: linear-gradient(135deg, #00aa66, #006644);
+    color: #fff;
+}
+#buy-confirm:hover { box-shadow: 0 0 20px rgba(0,255,170,0.4); transform: scale(1.04); }
+#buy-cancel {
+    border: 2px solid #555; background: linear-gradient(135deg, #333, #222);
+    color: #aaa;
+}
+#buy-cancel:hover { border-color: #888; color: #fff; transform: scale(1.04); }

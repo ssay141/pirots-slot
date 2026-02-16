@@ -1,0 +1,1671 @@
+'use client';
+
+import { useEffect, useRef } from 'react';
+
+export default function PirotsGame() {
+  const containerRef = useRef(null);
+  const initedRef = useRef(false);
+
+  useEffect(() => {
+    if (initedRef.current) return;
+    initedRef.current = true;
+
+    // ============================================================
+    // MODULE: CONFIGURATION & CONSTANTS
+    // ============================================================
+    const CONFIG = {
+        GRID_SIZE: 7,
+        GRID_MAX: 8,
+        CELL_GAP: 4,
+        MIN_CLUSTER: 5,
+        CASCADE_DELAY: 0.15,
+        DROP_SPEED: 1400,
+        SPIN_DURATION: 0.5,
+        DEFAULT_BET_INDEX: 2,
+        BET_LEVELS: [0.20, 0.50, 1.00, 2.00, 5.00, 10.00, 20.00, 50.00, 100.00],
+        STARTING_BALANCE: 1000.00,
+        SUPER_WILD_CHANCE: 0.02,
+        SCATTER_FREE_SPINS_BASE: 7,
+        SCATTER_FREE_SPINS_EXTRA: 2,
+        BIG_WIN_THRESHOLD: 10,
+        CLUSTER_SEED_CHANCE: 0.30,
+        FEATURE_BUY_MULTIPLIER: 100,
+        FEATURE_BUY_FREE_SPINS: 7
+    };
+
+    // ============================================================
+    // MODULE: STATS TRACKING (via /api/track proxy)
+    // ============================================================
+    const SESSION_ID = crypto.randomUUID ? crypto.randomUUID() : ('s-' + Date.now() + '-' + Math.random().toString(36).slice(2));
+
+    let spinStats = { clustersFound: 0, isFeatureBuy: false, freeSpinsTriggered: false };
+
+    function resetSpinStats() {
+        spinStats = { clustersFound: 0, isFeatureBuy: false, freeSpinsTriggered: false };
+    }
+
+    function trackSpin() {
+        const payload = {
+            session_id: SESSION_ID,
+            bet_amount: currentBet,
+            total_win: totalRoundWin,
+            win_multiplier: totalRoundWin > 0 ? (totalRoundWin / currentBet) : 0,
+            max_cascade_level: cascadeLevel,
+            max_multiplier: globalMultiplier,
+            clusters_found: spinStats.clustersFound,
+            is_free_spin: freeSpins.active,
+            is_feature_buy: spinStats.isFeatureBuy,
+            is_big_win: totalRoundWin > currentBet * CONFIG.BIG_WIN_THRESHOLD,
+            free_spins_triggered: spinStats.freeSpinsTriggered,
+            balance_after: balance + totalRoundWin,
+            user_agent: navigator.userAgent.slice(0, 255)
+        };
+
+        fetch('/api/track', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        }).catch(() => {}); // fire-and-forget
+    }
+
+    const SYMBOL_DEFS = [
+        { id: 0, name: 'blueGem',    type: 'gem',     color: '#4488ff', weight: 15, pays: { 5:0.4, 8:1.2, 12:4,  16:16 } },
+        { id: 1, name: 'greenGem',   type: 'gem',     color: '#44dd66', weight: 15, pays: { 5:0.5, 8:1.5, 12:5,  16:20 } },
+        { id: 2, name: 'purpleGem',  type: 'gem',     color: '#bb44ff', weight: 15, pays: { 5:0.6, 8:2,   12:6,  16:30 } },
+        { id: 3, name: 'redGem',     type: 'gem',     color: '#ff4455', weight: 15, pays: { 5:0.8, 8:2.5, 12:8,  16:40 } },
+        { id: 4, name: 'blueBird',   type: 'bird',    color: '#2266ee', weight: 8,  pays: { 5:1.5, 8:4,   12:15, 16:60 },  accessory: 'bandana' },
+        { id: 5, name: 'greenBird',  type: 'bird',    color: '#22bb44', weight: 8,  pays: { 5:2,   8:5,   12:20, 16:80 },  accessory: 'eyepatch' },
+        { id: 6, name: 'purpleBird', type: 'bird',    color: '#8833dd', weight: 8,  pays: { 5:2.5, 8:8,   12:30, 16:100 }, accessory: 'tricorn' },
+        { id: 7, name: 'redBird',    type: 'bird',    color: '#dd2222', weight: 8,  pays: { 5:4,   8:12,  12:40, 16:150 }, accessory: 'captain' },
+        { id: 8, name: 'wild',       type: 'wild',    color: '#ffcc00', weight: 0 },
+        { id: 9, name: 'scatter',    type: 'scatter', color: '#ff8800', weight: 1 }
+    ];
+
+    const WILD_ID = 8;
+    const SCATTER_ID = 9;
+    const TOTAL_WEIGHT = SYMBOL_DEFS.reduce((s, d) => s + d.weight, 0);
+
+    // ============================================================
+    // MODULE: UTILITY FUNCTIONS
+    // ============================================================
+    function lighten(hex, pct) {
+        let r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+        r = Math.min(255, r + (255 - r) * pct / 100);
+        g = Math.min(255, g + (255 - g) * pct / 100);
+        b = Math.min(255, b + (255 - b) * pct / 100);
+        return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+    }
+    function darken(hex, pct) {
+        let r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+        r = Math.max(0, r * (1 - pct / 100));
+        g = Math.max(0, g * (1 - pct / 100));
+        b = Math.max(0, b * (1 - pct / 100));
+        return `rgb(${Math.round(r)},${Math.round(g)},${Math.round(b)})`;
+    }
+    function hexToRgb(hex) {
+        const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
+        return `${r},${g},${b}`;
+    }
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function clamp(v, mn, mx) { return Math.max(mn, Math.min(mx, v)); }
+    function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+    function randFloat(min, max) { return Math.random() * (max - min) + min; }
+    function roundRect(ctx, x, y, w, h, r) {
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.lineTo(x + w - r, y);
+        ctx.arcTo(x + w, y, x + w, y + r, r);
+        ctx.lineTo(x + w, y + h - r);
+        ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+        ctx.lineTo(x + r, y + h);
+        ctx.arcTo(x, y + h, x, y + h - r, r);
+        ctx.lineTo(x, y + r);
+        ctx.arcTo(x, y, x + r, y, r);
+        ctx.closePath();
+    }
+
+    function randomSymbolId() {
+        let r = Math.random() * TOTAL_WEIGHT;
+        for (const s of SYMBOL_DEFS) {
+            r -= s.weight;
+            if (r <= 0) return s.id;
+        }
+        return 0;
+    }
+
+    // ============================================================
+    // MODULE: EASING FUNCTIONS
+    // ============================================================
+    const Easing = {
+        linear: t => t,
+        easeOutQuad: t => t * (2 - t),
+        easeOutCubic: t => (--t) * t * t + 1,
+        easeInCubic: t => t * t * t,
+        easeOutBounce: t => {
+            if (t < 1/2.75) return 7.5625*t*t;
+            if (t < 2/2.75) return 7.5625*(t-=1.5/2.75)*t+.75;
+            if (t < 2.5/2.75) return 7.5625*(t-=2.25/2.75)*t+.9375;
+            return 7.5625*(t-=2.625/2.75)*t+.984375;
+        },
+        easeInBack: t => t * t * (2.70158 * t - 1.70158),
+        easeOutBack: t => { t--; return t * t * (2.70158 * t + 1.70158) + 1; },
+        easeOutElastic: t => {
+            if (t === 0 || t === 1) return t;
+            return Math.pow(2, -10*t) * Math.sin((t-0.1)*5*Math.PI) + 1;
+        }
+    };
+
+    // ============================================================
+    // MODULE: SYMBOL RENDERER (PROCEDURAL DRAWING)
+    // ============================================================
+    function drawGem(ctx, size, baseColor) {
+        const cx = size/2, cy = size/2, r = size*0.34;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy + r*0.7, r*0.6, r*0.2, 0, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.fill();
+        ctx.beginPath();
+        for (let i = 0; i < 8; i++) {
+            const angle = (Math.PI/4)*i - Math.PI/8;
+            const x = cx + r * Math.cos(angle), y = cy + r * Math.sin(angle);
+            i === 0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
+        }
+        ctx.closePath();
+        const grad = ctx.createRadialGradient(cx - r*0.3, cy - r*0.3, 0, cx, cy, r);
+        grad.addColorStop(0, lighten(baseColor, 60));
+        grad.addColorStop(0.4, baseColor);
+        grad.addColorStop(1, darken(baseColor, 40));
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = darken(baseColor, 50);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.strokeStyle = lighten(baseColor, 25);
+        ctx.lineWidth = 0.8;
+        for (let i = 0; i < 8; i += 2) {
+            const angle = (Math.PI/4)*i - Math.PI/8;
+            ctx.beginPath(); ctx.moveTo(cx, cy);
+            ctx.lineTo(cx + r*Math.cos(angle), cy + r*Math.sin(angle));
+            ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.ellipse(cx - r*0.15, cy - r*0.3, r*0.22, r*0.1, -0.3, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(cx + r*0.1, cy - r*0.15, r*0.08, r*0.05, 0.2, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.fill();
+    }
+
+    function drawBird(ctx, size, baseColor, accessory) {
+        const cx = size/2, cy = size/2, s = size/100;
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.scale(s, s);
+        ctx.beginPath();
+        ctx.ellipse(2, 32, 16, 5, 0, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fill();
+        ctx.lineCap = 'round';
+        for (let i = -1; i <= 1; i++) {
+            ctx.beginPath();
+            ctx.moveTo(16, 12 + i*5);
+            ctx.quadraticCurveTo(34, 8 + i*7, 38, 18 + i*6);
+            ctx.strokeStyle = darken(baseColor, 10 + i*5);
+            ctx.lineWidth = 3.5;
+            ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.moveTo(0, 24);
+        ctx.bezierCurveTo(-28, 24, -30, -4, -20, -18);
+        ctx.bezierCurveTo(-10, -33, 10, -33, 20, -18);
+        ctx.bezierCurveTo(30, -4, 28, 24, 0, 24);
+        ctx.closePath();
+        const bodyGrad = ctx.createRadialGradient(-5, -8, 0, 0, 0, 34);
+        bodyGrad.addColorStop(0, lighten(baseColor, 30));
+        bodyGrad.addColorStop(1, darken(baseColor, 20));
+        ctx.fillStyle = bodyGrad;
+        ctx.fill();
+        ctx.strokeStyle = darken(baseColor, 45);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.ellipse(0, 6, 13, 15, 0, 0, Math.PI*2);
+        ctx.fillStyle = lighten(baseColor, 55);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(-17, -4);
+        ctx.bezierCurveTo(-34, 0, -37, 14, -24, 20);
+        ctx.bezierCurveTo(-19, 17, -14, 8, -17, -4);
+        ctx.closePath();
+        ctx.fillStyle = darken(baseColor, 12);
+        ctx.fill();
+        ctx.strokeStyle = darken(baseColor, 40);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-20, 2); ctx.quadraticCurveTo(-30, 8, -28, 16);
+        ctx.strokeStyle = darken(baseColor, 25);
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(-6, -17, 8, 0, Math.PI*2);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.strokeStyle = darken(baseColor, 45);
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(-4, -17, 4, 0, Math.PI*2);
+        ctx.fillStyle = '#111';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(-6, -19.5, 2, 0, Math.PI*2);
+        ctx.fillStyle = '#fff';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(-13, -13);
+        ctx.quadraticCurveTo(-25, -16, -23, -9);
+        ctx.quadraticCurveTo(-20, -7, -13, -9);
+        ctx.closePath();
+        ctx.fillStyle = '#ffaa22';
+        ctx.fill();
+        ctx.strokeStyle = '#bb7711';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(-13, -9);
+        ctx.quadraticCurveTo(-19, -6, -15, -5);
+        ctx.lineTo(-13, -9);
+        ctx.fillStyle = '#ee9911';
+        ctx.fill();
+        ctx.strokeStyle = '#ffaa22';
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        [[-5,24,-8,33], [5,24,8,33]].forEach(([x1,y1,x2,y2]) => {
+            ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2-5,y2+3); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(x2,y2); ctx.lineTo(x2+5,y2+3); ctx.stroke();
+        });
+        if (accessory === 'bandana') {
+            ctx.beginPath();
+            ctx.moveTo(-22, -24); ctx.lineTo(14, -28); ctx.lineTo(12, -22); ctx.lineTo(-22, -18);
+            ctx.closePath();
+            ctx.fillStyle = '#dd2222';
+            ctx.fill();
+            ctx.strokeStyle = '#991111';
+            ctx.lineWidth = 0.8;
+            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(14,-28); ctx.quadraticCurveTo(22,-32, 24,-26); ctx.strokeStyle='#dd2222'; ctx.lineWidth=2.5; ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(14,-25); ctx.quadraticCurveTo(20,-22, 22,-28); ctx.stroke();
+        } else if (accessory === 'eyepatch') {
+            ctx.beginPath();
+            ctx.moveTo(6, -26); ctx.lineTo(-6, -17);
+            ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(8, -17, 6, 0, Math.PI*2);
+            ctx.fillStyle = '#222';
+            ctx.fill();
+            ctx.strokeStyle = '#444'; ctx.lineWidth = 0.8; ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(8,-23); ctx.lineTo(-4,-28); ctx.strokeStyle='#222'; ctx.lineWidth=1.5; ctx.stroke();
+        } else if (accessory === 'tricorn') {
+            ctx.beginPath();
+            ctx.moveTo(0, -38);
+            ctx.lineTo(-22, -22);
+            ctx.quadraticCurveTo(-10, -20, 0, -24);
+            ctx.quadraticCurveTo(10, -20, 22, -22);
+            ctx.lineTo(0, -38);
+            ctx.closePath();
+            ctx.fillStyle = '#332244';
+            ctx.fill();
+            ctx.strokeStyle = '#aa8844';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(-24, -22); ctx.quadraticCurveTo(0, -16, 24, -22);
+            ctx.strokeStyle = '#aa8844';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        } else if (accessory === 'captain') {
+            ctx.beginPath();
+            ctx.moveTo(-20, -24);
+            ctx.quadraticCurveTo(-22, -38, 0, -40);
+            ctx.quadraticCurveTo(22, -38, 20, -24);
+            ctx.lineTo(-20, -24);
+            ctx.closePath();
+            ctx.fillStyle = '#1a1a3a';
+            ctx.fill();
+            ctx.strokeStyle = '#aa8844';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(-20, -24); ctx.lineTo(20, -24);
+            ctx.strokeStyle = '#ddaa44';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(0, -32, 4, 0, Math.PI*2);
+            ctx.fillStyle = '#ddd';
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(-1.5, -33, 0.8, 0, Math.PI*2);
+            ctx.arc(1.5, -33, 0.8, 0, Math.PI*2);
+            ctx.fillStyle = '#1a1a3a';
+            ctx.fill();
+            ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1.2;
+            ctx.beginPath(); ctx.moveTo(-6,-30); ctx.lineTo(6,-34); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(6,-30); ctx.lineTo(-6,-34); ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    function drawWild(ctx, size) {
+        const cx = size/2, cy = size/2, r = size*0.38;
+        ctx.save();
+        ctx.shadowColor = '#ffcc00';
+        ctx.shadowBlur = size*0.15;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r+2, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,204,0,0.15)';
+        ctx.fill();
+        ctx.restore();
+        const grad = ctx.createRadialGradient(cx-r*0.25, cy-r*0.25, 0, cx, cy, r);
+        grad.addColorStop(0, '#fffadd');
+        grad.addColorStop(0.4, '#ffcc00');
+        grad.addColorStop(0.8, '#cc8800');
+        grad.addColorStop(1, '#885500');
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI*2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+        ctx.strokeStyle = '#aa7700';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx, cy, r*0.82, 0, Math.PI*2);
+        ctx.strokeStyle = '#ddaa22';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.font = `bold ${size*0.32}px serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#885500';
+        ctx.fillText('W', cx+0.5, cy+2);
+        ctx.fillStyle = '#ffe066';
+        ctx.fillText('W', cx, cy+1);
+        ctx.beginPath();
+        ctx.ellipse(cx-r*0.2, cy-r*0.25, r*0.25, r*0.1, -0.4, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        ctx.fill();
+    }
+
+    function drawScatter(ctx, size) {
+        const cx = size/2, cy = size/2;
+        ctx.save();
+        ctx.shadowColor = '#ff8800';
+        ctx.shadowBlur = size*0.18;
+        ctx.beginPath();
+        ctx.arc(cx, cy, size*0.38, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,136,0,0.12)';
+        ctx.fill();
+        ctx.restore();
+        const bw = size*0.6, bh = size*0.35;
+        const bx = cx - bw/2, by = cy - bh/2 + size*0.06;
+        roundRect(ctx, bx, by, bw, bh, 4);
+        const woodGrad = ctx.createLinearGradient(bx, by, bx, by+bh);
+        woodGrad.addColorStop(0, '#aa6633');
+        woodGrad.addColorStop(0.5, '#884422');
+        woodGrad.addColorStop(1, '#663311');
+        ctx.fillStyle = woodGrad;
+        ctx.fill();
+        ctx.strokeStyle = '#553300';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(bx-2, by);
+        ctx.quadraticCurveTo(cx, by-size*0.18, bx+bw+2, by);
+        ctx.lineTo(bx+bw+2, by+4);
+        ctx.quadraticCurveTo(cx, by-size*0.14, bx-2, by+4);
+        ctx.closePath();
+        ctx.fillStyle = '#996633';
+        ctx.fill();
+        ctx.strokeStyle = '#553300';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = '#ddaa33';
+        ctx.fillRect(bx+2, by + bh*0.15, bw-4, 3);
+        ctx.fillRect(bx+2, by + bh*0.65, bw-4, 3);
+        ctx.beginPath();
+        ctx.arc(cx, by + bh*0.42, 4, 0, Math.PI*2);
+        ctx.fillStyle = '#ffcc44';
+        ctx.fill();
+        ctx.strokeStyle = '#aa8822';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        const gGrad = ctx.createRadialGradient(cx, by - 4, 0, cx, by - 4, size*0.3);
+        gGrad.addColorStop(0, 'rgba(255,200,0,0.4)');
+        gGrad.addColorStop(1, 'rgba(255,200,0,0)');
+        ctx.fillStyle = gGrad;
+        ctx.fillRect(bx-size*0.1, by - size*0.25, bw+size*0.2, size*0.25);
+        ctx.font = `bold ${size*0.14}px sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ffdd44';
+        ctx.fillText('FREE', cx, by + bh + size*0.1);
+    }
+
+    let symbolCache = {};
+    let cellSize = 70;
+
+    function preRenderSymbols() {
+        symbolCache = {};
+        for (const sym of SYMBOL_DEFS) {
+            const canvas = document.createElement('canvas');
+            canvas.width = cellSize;
+            canvas.height = cellSize;
+            const ctx = canvas.getContext('2d');
+            if (sym.type === 'gem') drawGem(ctx, cellSize, sym.color);
+            else if (sym.type === 'bird') drawBird(ctx, cellSize, sym.color, sym.accessory);
+            else if (sym.type === 'wild') drawWild(ctx, cellSize);
+            else if (sym.type === 'scatter') drawScatter(ctx, cellSize);
+            symbolCache[sym.id] = canvas;
+        }
+    }
+
+    // ============================================================
+    // MODULE: PARTICLE SYSTEM
+    // ============================================================
+    class Particle {
+        constructor(cfg) {
+            this.x = cfg.x + (Math.random()-0.5)*(cfg.spread||0);
+            this.y = cfg.y + (Math.random()-0.5)*(cfg.spread||0);
+            const angle = (cfg.angle||0) + (Math.random()-0.5)*(cfg.angleSpread||Math.PI*2);
+            const speed = (cfg.speed||100) * (0.5 + Math.random()*0.5);
+            this.vx = Math.cos(angle)*speed;
+            this.vy = Math.sin(angle)*speed;
+            this.gravity = cfg.gravity !== undefined ? cfg.gravity : 180;
+            this.life = this.maxLife = cfg.lifetime || 1;
+            this.alpha = 1;
+            this.rotation = Math.random()*Math.PI*2;
+            this.rotSpeed = (Math.random()-0.5)*5;
+            this.scale = cfg.scale || 1;
+            this.shrink = cfg.shrink || 0.2;
+            this.color = cfg.color || '#fff';
+            this.drawFn = cfg.drawFn;
+        }
+    }
+
+    const particleDrawFns = {
+        feather(ctx, p) {
+            ctx.beginPath();
+            ctx.moveTo(0,-8);
+            ctx.quadraticCurveTo(5,-4,4,4);
+            ctx.quadraticCurveTo(0,8,-4,4);
+            ctx.quadraticCurveTo(-5,-4,0,-8);
+            ctx.fillStyle = p.color;
+            ctx.fill();
+            ctx.beginPath(); ctx.moveTo(0,-7); ctx.lineTo(0,5);
+            ctx.strokeStyle = darken(p.color,30); ctx.lineWidth = 0.6; ctx.stroke();
+        },
+        sparkle(ctx, p) {
+            const r = 4;
+            ctx.beginPath();
+            for (let i = 0; i < 8; i++) {
+                const ang = (Math.PI/4)*i;
+                const rad = i%2===0?r:r*0.3;
+                const x = Math.cos(ang)*rad, y = Math.sin(ang)*rad;
+                i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);
+            }
+            ctx.closePath();
+            ctx.fillStyle = '#ffffff';
+            ctx.fill();
+        },
+        coin(ctx, p) {
+            const xs = Math.abs(Math.cos(p.rotation*2)) + 0.15;
+            ctx.scale(xs, 1);
+            ctx.beginPath();
+            ctx.arc(0,0,6,0,Math.PI*2);
+            const g = ctx.createRadialGradient(-2,-2,0,0,0,6);
+            g.addColorStop(0,'#fff8cc');g.addColorStop(0.5,'#ffcc00');g.addColorStop(1,'#aa7700');
+            ctx.fillStyle = g;
+            ctx.fill();
+            ctx.strokeStyle = '#886600'; ctx.lineWidth = 0.5; ctx.stroke();
+        },
+        shard(ctx, p) {
+            ctx.beginPath();
+            ctx.moveTo(0,-5); ctx.lineTo(4,3); ctx.lineTo(-3,2);
+            ctx.closePath();
+            ctx.fillStyle = p.color;
+            ctx.fill();
+        }
+    };
+
+    class ParticleSystem {
+        constructor() { this.particles = []; this.emitters = []; }
+        emit(cfg) {
+            const count = cfg.count || 1;
+            for (let i = 0; i < count && this.particles.length < 500; i++) {
+                this.particles.push(new Particle(cfg));
+            }
+        }
+        addEmitter(emitter) { this.emitters.push(emitter); }
+        update(dt) {
+            for (const e of this.emitters) {
+                e.elapsed = (e.elapsed||0) + dt;
+                e.totalElapsed = (e.totalElapsed||0) + dt;
+                if (e.elapsed >= (e.interval||0.2)) {
+                    e.elapsed -= e.interval||0.2;
+                    this.emit(e.config);
+                }
+                if (e.duration > 0 && e.totalElapsed > e.duration) e.dead = true;
+            }
+            this.emitters = this.emitters.filter(e => !e.dead);
+            for (const p of this.particles) {
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.vy += p.gravity * dt;
+                p.life -= dt;
+                p.alpha = clamp(p.life / p.maxLife, 0, 1);
+                p.rotation += p.rotSpeed * dt;
+                p.scale = Math.max(0.01, p.scale - p.shrink * dt);
+            }
+            this.particles = this.particles.filter(p => p.life > 0);
+        }
+        draw(ctx) {
+            for (const p of this.particles) {
+                ctx.save();
+                ctx.globalAlpha = p.alpha;
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.rotation);
+                ctx.scale(p.scale, p.scale);
+                if (p.drawFn) p.drawFn(ctx, p);
+                ctx.restore();
+            }
+        }
+        clear() { this.particles = []; this.emitters = []; }
+    }
+
+    // ============================================================
+    // MODULE: AUDIO ENGINE (MINIMAL)
+    // ============================================================
+    class AudioEngine {
+        constructor() {
+            this.ctx = null;
+            this.masterGain = null;
+            this.muted = false;
+        }
+        init() {
+            if (this.ctx) return;
+            this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            this.masterGain = this.ctx.createGain();
+            this.masterGain.gain.value = 0.5;
+            this.masterGain.connect(this.ctx.destination);
+        }
+        setMuted(m) {
+            this.muted = m;
+            if (this.masterGain) this.masterGain.gain.value = m ? 0 : 0.5;
+        }
+        playTone(freq, duration, type, vol) {
+            if (!this.ctx || this.muted) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = type || 'sine';
+            osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+            gain.gain.setValueAtTime(vol||0.15, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + (duration||0.2));
+            osc.connect(gain); gain.connect(this.masterGain);
+            osc.start(); osc.stop(this.ctx.currentTime + (duration||0.2));
+        }
+        playSpin() {
+            if (!this.ctx || this.muted) return;
+            const osc = this.ctx.createOscillator();
+            const gain = this.ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(200, this.ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(700, this.ctx.currentTime + 0.15);
+            gain.gain.setValueAtTime(0.2, this.ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.2);
+            osc.connect(gain); gain.connect(this.masterGain);
+            osc.start(); osc.stop(this.ctx.currentTime + 0.2);
+        }
+        playWin(clusterSize) {
+            if (!this.ctx || this.muted) return;
+            const baseFreq = 440 + (clusterSize - 5) * 50;
+            [1, 1.25, 1.5, 2].forEach((h, i) => {
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = baseFreq * h;
+                gain.gain.setValueAtTime(0.12 / (i+1), this.ctx.currentTime + i*0.04);
+                gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + i*0.04 + 0.6);
+                osc.connect(gain); gain.connect(this.masterGain);
+                osc.start(this.ctx.currentTime + i*0.04);
+                osc.stop(this.ctx.currentTime + i*0.04 + 0.6);
+            });
+        }
+        playBigWin() {
+            if (!this.ctx || this.muted) return;
+            const chords = [[261,329,392],[349,440,523],[392,494,587],[523,659,784]];
+            chords.forEach((chord, ci) => {
+                chord.forEach((freq, ni) => {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = ni===0?'sine':'triangle';
+                    osc.frequency.value = freq;
+                    const t = this.ctx.currentTime + ci*0.25 + ni*0.015;
+                    gain.gain.setValueAtTime(0.12, t);
+                    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.8);
+                    osc.connect(gain); gain.connect(this.masterGain);
+                    osc.start(t); osc.stop(t + 0.8);
+                });
+            });
+        }
+        playClick() { this.playTone(600, 0.06, 'sine', 0.1); }
+    }
+
+    // ============================================================
+    // MODULE: SCREEN SHAKE
+    // ============================================================
+    class ScreenShake {
+        constructor() { this.ox=0; this.oy=0; this.intensity=0; this.duration=0; this.elapsed=0; }
+        trigger(intensity, duration) { this.intensity=intensity; this.duration=duration; this.elapsed=0; }
+        update(dt) {
+            if (this.elapsed < this.duration) {
+                this.elapsed += dt;
+                const decay = 1 - this.elapsed/this.duration;
+                this.ox = (Math.random()-0.5)*this.intensity*decay*2;
+                this.oy = (Math.random()-0.5)*this.intensity*decay*2;
+            } else { this.ox=0; this.oy=0; }
+        }
+    }
+
+    // ============================================================
+    // MODULE: GRID MODEL
+    // ============================================================
+    class GridModel {
+        constructor(size) {
+            this.size = size;
+            this.cells = [];
+            this.init();
+        }
+        init() {
+            this.cells = [];
+            for (let r = 0; r < this.size; r++) {
+                this.cells[r] = [];
+                for (let c = 0; c < this.size; c++) {
+                    this.cells[r][c] = { id: randomSymbolId() };
+                }
+            }
+        }
+        get(r,c) { return (r>=0&&r<this.size&&c>=0&&c<this.size) ? this.cells[r][c] : null; }
+        set(r,c,v) { if(r>=0&&r<this.size&&c>=0&&c<this.size) this.cells[r][c]=v; }
+        clear(r,c) { this.cells[r][c] = null; }
+    }
+
+    // ============================================================
+    // MODULE: CLUSTER DETECTION (BFS FLOOD FILL)
+    // ============================================================
+    function findClusters(grid) {
+        const size = grid.size;
+        const clusters = [];
+        for (let symId = 0; symId <= 7; symId++) {
+            const visited = Array.from({length:size}, ()=>new Array(size).fill(false));
+            for (let r = 0; r < size; r++) {
+                for (let c = 0; c < size; c++) {
+                    if (visited[r][c]) continue;
+                    const cell = grid.get(r,c);
+                    if (!cell || (cell.id !== symId && cell.id !== WILD_ID)) { continue; }
+                    if (cell.id === WILD_ID) continue;
+                    const cluster = [];
+                    const queue = [[r,c]];
+                    visited[r][c] = true;
+                    while (queue.length > 0) {
+                        const [cr,cc] = queue.shift();
+                        cluster.push([cr,cc]);
+                        for (const [nr,nc] of [[cr-1,cc],[cr+1,cc],[cr,cc-1],[cr,cc+1]]) {
+                            if (nr<0||nr>=size||nc<0||nc>=size||visited[nr][nc]) continue;
+                            const n = grid.get(nr,nc);
+                            if (!n) continue;
+                            if (n.id === symId || n.id === WILD_ID) {
+                                visited[nr][nc] = true;
+                                queue.push([nr,nc]);
+                            }
+                        }
+                    }
+                    if (cluster.length >= CONFIG.MIN_CLUSTER) {
+                        clusters.push({ cells: cluster, symbolId: symId, size: cluster.length });
+                    }
+                }
+            }
+        }
+        clusters.sort((a,b) => b.size - a.size);
+        const used = new Set();
+        const finalClusters = [];
+        for (const cl of clusters) {
+            const filtered = cl.cells.filter(([r,c]) => !used.has(r*100+c));
+            if (filtered.length >= CONFIG.MIN_CLUSTER) {
+                for (const [r,c] of filtered) used.add(r*100+c);
+                finalClusters.push({ cells: filtered, symbolId: cl.symbolId, size: filtered.length });
+            }
+        }
+        return finalClusters;
+    }
+
+    function calculatePayout(cluster, bet, multiplier) {
+        const sym = SYMBOL_DEFS.find(s => s.id === cluster.symbolId);
+        if (!sym || !sym.pays) return 0;
+        const tiers = Object.keys(sym.pays).map(Number).sort((a,b)=>b-a);
+        let pay = 0;
+        for (const t of tiers) {
+            if (cluster.size >= t) { pay = sym.pays[t]; break; }
+        }
+        return pay * bet * multiplier;
+    }
+
+    function countScatters(grid) {
+        let count = 0;
+        const positions = [];
+        for (let r = 0; r < grid.size; r++)
+            for (let c = 0; c < grid.size; c++) {
+                const cell = grid.get(r,c);
+                if (cell && cell.id === SCATTER_ID) { count++; positions.push([r,c]); }
+            }
+        return { count, positions };
+    }
+
+    // ============================================================
+    // MODULE: CASCADE ENGINE
+    // ============================================================
+    function doCascade(grid) {
+        const movements = [];
+        const newSymbols = [];
+        for (let c = 0; c < grid.size; c++) {
+            const remaining = [];
+            for (let r = grid.size-1; r >= 0; r--) {
+                if (grid.get(r,c) !== null) remaining.push({row:r, cell: grid.get(r,c)});
+            }
+            let wr = grid.size - 1;
+            for (const item of remaining) {
+                if (item.row !== wr) {
+                    movements.push({fromR:item.row, fromC:c, toR:wr, toC:c, cell:item.cell});
+                }
+                grid.set(wr, c, item.cell);
+                wr--;
+            }
+            while (wr >= 0) {
+                const newCell = { id: randomSymbolId() };
+                grid.set(wr, c, newCell);
+                newSymbols.push({row:wr, col:c, cell:newCell, fromAbove: wr - (grid.size - wr)});
+                wr--;
+            }
+        }
+        return { movements, newSymbols };
+    }
+
+    // ============================================================
+    // MODULE: GAME STATE & MAIN LOGIC
+    // ============================================================
+    const State = {
+        IDLE: 'IDLE',
+        SPINNING: 'SPINNING',
+        DROPPING: 'DROPPING',
+        EVALUATING: 'EVALUATING',
+        WIN_DISPLAY: 'WIN_DISPLAY',
+        REMOVING: 'REMOVING',
+        CASCADING: 'CASCADING',
+        FREE_TRIGGER: 'FREE_TRIGGER',
+        FREE_IDLE: 'FREE_IDLE',
+        BIG_WIN: 'BIG_WIN',
+        SUMMARY: 'SUMMARY'
+    };
+
+    let bgCanvas, bgCtx, gameCanvas, gameCtx;
+    let grid;
+    let currentState = State.IDLE;
+    let balance = CONFIG.STARTING_BALANCE;
+    let betIndex = CONFIG.DEFAULT_BET_INDEX;
+    let currentBet = CONFIG.BET_LEVELS[betIndex];
+    let lastWin = 0;
+    let totalRoundWin = 0;
+    let globalMultiplier = 1;
+    let cascadeLevel = 0;
+    let currentClusters = [];
+    let turboMode = false;
+    let autoSpin = false;
+    let particles = new ParticleSystem();
+    let audio = new AudioEngine();
+    let shake = new ScreenShake();
+    let freeSpins = { active: false, remaining: 0, totalWin: 0 };
+    let cellAnims = [];
+    let stateTimer = 0;
+    let statePhase = 0;
+    let gridOffsetX = 0, gridOffsetY = 0;
+    let canvasW = 0, canvasH = 0;
+    let dpr = 1;
+    let ambientEmitter = null;
+
+    // ============================================================
+    // MODULE: BACKGROUND RENDERER
+    // ============================================================
+    function drawBackground() {
+        const w = canvasW, h = canvasH;
+        const ctx = bgCtx;
+        ctx.clearRect(0, 0, w, h);
+        const skyGrad = ctx.createLinearGradient(0, 0, 0, h*0.65);
+        skyGrad.addColorStop(0, '#060824');
+        skyGrad.addColorStop(0.3, '#0e1a4a');
+        skyGrad.addColorStop(0.6, '#2a1a4a');
+        skyGrad.addColorStop(0.8, '#cc4422');
+        skyGrad.addColorStop(1, '#ffaa33');
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, w, h);
+        for (let i = 0; i < 100; i++) {
+            const sx = Math.random()*w, sy = Math.random()*h*0.45;
+            const sr = 0.4 + Math.random()*1.4;
+            ctx.beginPath();
+            ctx.arc(sx, sy, sr, 0, Math.PI*2);
+            ctx.fillStyle = `rgba(255,255,255,${0.2+Math.random()*0.8})`;
+            ctx.fill();
+        }
+        const oceanGrad = ctx.createLinearGradient(0, h*0.58, 0, h);
+        oceanGrad.addColorStop(0, '#1155aa');
+        oceanGrad.addColorStop(0.3, '#0d3d7a');
+        oceanGrad.addColorStop(1, '#061a3a');
+        ctx.fillStyle = oceanGrad;
+        ctx.fillRect(0, h*0.58, w, h*0.42);
+        const horizGrad = ctx.createRadialGradient(w*0.5, h*0.58, 0, w*0.5, h*0.58, w*0.5);
+        horizGrad.addColorStop(0, 'rgba(255,170,50,0.3)');
+        horizGrad.addColorStop(1, 'rgba(255,170,50,0)');
+        ctx.fillStyle = horizGrad;
+        ctx.fillRect(0, h*0.45, w, h*0.25);
+        drawIsland(ctx, w*0.08, h*0.57, w*0.12, h*0.06);
+        drawIsland(ctx, w*0.82, h*0.55, w*0.14, h*0.07);
+        drawPalmTree(ctx, w*0.12, h*0.52, h*0.12);
+        drawPalmTree(ctx, w*0.88, h*0.50, h*0.10);
+        ctx.strokeStyle = 'rgba(100,180,255,0.08)';
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < 6; i++) {
+            const y = h*0.62 + i*h*0.05;
+            ctx.beginPath();
+            for (let x = 0; x < w; x += 5) {
+                const yy = y + Math.sin(x*0.01 + i*2)*4;
+                x === 0 ? ctx.moveTo(x,yy) : ctx.lineTo(x,yy);
+            }
+            ctx.stroke();
+        }
+        const totalGridW = CONFIG.GRID_SIZE * (cellSize + CONFIG.CELL_GAP) - CONFIG.CELL_GAP;
+        const totalGridH = totalGridW;
+        const gx = gridOffsetX - 18, gy = gridOffsetY - 18;
+        const gw = totalGridW + 36, gh = totalGridH + 36;
+        roundRect(ctx, gx, gy, gw, gh, 16);
+        const panelGrad = ctx.createLinearGradient(gx, gy, gx, gy+gh);
+        panelGrad.addColorStop(0, 'rgba(0,10,30,0.82)');
+        panelGrad.addColorStop(1, 'rgba(0,5,15,0.92)');
+        ctx.fillStyle = panelGrad;
+        ctx.fill();
+        roundRect(ctx, gx, gy, gw, gh, 16);
+        ctx.strokeStyle = '#886622';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        roundRect(ctx, gx+5, gy+5, gw-10, gh-10, 12);
+        ctx.strokeStyle = 'rgba(170,130,50,0.3)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+    }
+
+    function drawIsland(ctx, x, y, w, h) {
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + w*0.3, y - h*1.5, x + w*0.5, y - h);
+        ctx.quadraticCurveTo(x + w*0.7, y - h*1.8, x + w, y);
+        ctx.closePath();
+        ctx.fillStyle = '#1a2a1a';
+        ctx.fill();
+    }
+
+    function drawPalmTree(ctx, x, y, h) {
+        ctx.beginPath();
+        ctx.moveTo(x-3, y);
+        ctx.quadraticCurveTo(x+4, y-h*0.5, x+2, y-h);
+        ctx.quadraticCurveTo(x+6, y-h*0.5, x+3, y);
+        ctx.closePath();
+        ctx.fillStyle = '#3a2a1a';
+        ctx.fill();
+        for (let i = 0; i < 5; i++) {
+            const angle = -Math.PI/2 + (i-2)*0.5;
+            const len = h*0.5;
+            ctx.beginPath();
+            ctx.moveTo(x+2, y-h);
+            ctx.quadraticCurveTo(
+                x+2 + Math.cos(angle)*len*0.5, y-h + Math.sin(angle)*len*0.3,
+                x+2 + Math.cos(angle)*len, y-h + Math.sin(angle)*len*0.6 + len*0.3
+            );
+            ctx.strokeStyle = '#1a3a1a';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+        }
+    }
+
+    // ============================================================
+    // MODULE: GAME RENDERING
+    // ============================================================
+    function getCellPos(row, col) {
+        const stride = cellSize + CONFIG.CELL_GAP;
+        return {
+            x: gridOffsetX + col * stride,
+            y: gridOffsetY + row * stride
+        };
+    }
+
+    function drawGrid(ctx, time) {
+        const stride = cellSize + CONFIG.CELL_GAP;
+        for (let r = 0; r < grid.size; r++) {
+            for (let c = 0; c < grid.size; c++) {
+                const pos = getCellPos(r, c);
+                const hue = 210 + (r+c)*2;
+                ctx.fillStyle = `hsla(${hue}, 25%, 10%, 0.6)`;
+                roundRect(ctx, pos.x, pos.y, cellSize, cellSize, 5);
+                ctx.fill();
+                const ig = ctx.createLinearGradient(pos.x, pos.y, pos.x, pos.y+cellSize);
+                ig.addColorStop(0, 'rgba(255,255,255,0.04)');
+                ig.addColorStop(1, 'rgba(0,0,0,0.06)');
+                ctx.fillStyle = ig;
+                roundRect(ctx, pos.x, pos.y, cellSize, cellSize, 5);
+                ctx.fill();
+            }
+        }
+    }
+
+    function drawSymbols(ctx, time) {
+        for (let r = 0; r < grid.size; r++) {
+            for (let c = 0; c < grid.size; c++) {
+                const cell = grid.get(r,c);
+                if (!cell || cell.id === null || cell.id === undefined) continue;
+                const anim = getCellAnim(r, c);
+                const pos = getCellPos(r, c);
+                let x = pos.x, y = pos.y;
+                let scaleX = 1, scaleY = 1;
+                let alpha = 1;
+                if (anim) {
+                    if (anim.prop === 'dropY') {
+                        y = anim.currentVal;
+                    } else if (anim.prop === 'scaleOut') {
+                        const s = anim.currentVal;
+                        scaleX = s; scaleY = s;
+                        alpha = s;
+                    } else if (anim.prop === 'alpha') {
+                        alpha = anim.currentVal;
+                    }
+                }
+                if (currentState === State.IDLE || currentState === State.FREE_IDLE) {
+                    const sym = SYMBOL_DEFS[cell.id];
+                    if (sym && sym.type === 'bird') {
+                        const phase = (r*7 + c*13)*0.5;
+                        y += Math.sin(time*2 + phase)*1.5;
+                    }
+                }
+                if (currentState === State.WIN_DISPLAY && currentClusters.length > 0) {
+                    const inCluster = currentClusters.some(cl => cl.cells.some(([cr,cc])=>cr===r&&cc===c));
+                    if (!inCluster) alpha *= 0.4;
+                }
+                const cached = symbolCache[cell.id];
+                if (!cached) continue;
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                const cx = x + cellSize/2, cy = y + cellSize/2;
+                ctx.translate(cx, cy);
+                ctx.scale(scaleX, scaleY);
+                ctx.drawImage(cached, -cellSize/2, -cellSize/2, cellSize, cellSize);
+                ctx.restore();
+            }
+        }
+    }
+
+    function drawWinGlows(ctx, time) {
+        if (currentState !== State.WIN_DISPLAY || currentClusters.length === 0) return;
+        const pulse = 0.5 + 0.5*Math.sin(time*8);
+        for (const cluster of currentClusters) {
+            const sym = SYMBOL_DEFS[cluster.symbolId];
+            const color = sym ? sym.color : '#ffcc00';
+            for (const [r,c] of cluster.cells) {
+                const pos = getCellPos(r,c);
+                ctx.save();
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 12 + pulse*10;
+                ctx.strokeStyle = `rgba(${hexToRgb(color)}, ${0.5 + pulse*0.5})`;
+                ctx.lineWidth = 3;
+                roundRect(ctx, pos.x-1, pos.y-1, cellSize+2, cellSize+2, 6);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+    }
+
+    // ============================================================
+    // MODULE: ANIMATION HELPERS
+    // ============================================================
+    function addCellAnim(row, col, prop, from, to, duration, easing, onDone) {
+        cellAnims.push({ row, col, prop, from, to, elapsed:0, duration, easing: easing||Easing.easeOutCubic, currentVal:from, onDone });
+    }
+
+    function getCellAnim(row, col) {
+        return cellAnims.find(a => a.row===row && a.col===col);
+    }
+
+    function updateAnims(dt) {
+        const done = [];
+        for (const a of cellAnims) {
+            a.elapsed += dt;
+            let t = clamp(a.elapsed / a.duration, 0, 1);
+            t = a.easing(t);
+            a.currentVal = lerp(a.from, a.to, t);
+            if (a.elapsed >= a.duration) {
+                a.currentVal = a.to;
+                done.push(a);
+            }
+        }
+        for (const a of done) {
+            cellAnims = cellAnims.filter(x => x !== a);
+            if (a.onDone) a.onDone();
+        }
+    }
+
+    // ============================================================
+    // MODULE: GAME STATE HANDLERS
+    // ============================================================
+    let pendingAnimsDone = 0;
+    let pendingAnimsTotal = 0;
+
+    function animDoneCheck() {
+        pendingAnimsDone++;
+        if (pendingAnimsDone >= pendingAnimsTotal) {
+            onAllAnimsDone();
+        }
+    }
+
+    let onAllAnimsDone = () => {};
+
+    function speedMul() { return turboMode ? 2.5 : 1; }
+
+    function enterState(newState) {
+        currentState = newState;
+        stateTimer = 0;
+        statePhase = 0;
+
+        switch (newState) {
+        case State.IDLE:
+            updateUI();
+            if (autoSpin && balance >= currentBet && !freeSpins.active) {
+                setTimeout(() => { if (currentState === State.IDLE && autoSpin) doSpin(); }, 400/speedMul());
+            }
+            break;
+
+        case State.SPINNING:
+            totalRoundWin = 0;
+            globalMultiplier = 1;
+            cascadeLevel = 0;
+            lastWin = 0;
+            updateUI();
+            grid.init();
+            if (Math.random() < CONFIG.CLUSTER_SEED_CHANCE) seedCluster(grid);
+            audio.playSpin();
+            enterState(State.DROPPING);
+            break;
+
+        case State.DROPPING: {
+            cellAnims = [];
+            pendingAnimsDone = 0;
+            pendingAnimsTotal = grid.size * grid.size;
+            const speed = speedMul();
+            for (let c = 0; c < grid.size; c++) {
+                for (let r = 0; r < grid.size; r++) {
+                    const pos = getCellPos(r, c);
+                    const fromY = pos.y - canvasH * 0.6 - r * cellSize * 0.5;
+                    const delay = c * 0.04 / speed + r * 0.02 / speed;
+                    const dur = (0.35 + r * 0.03) / speed;
+                    addCellAnim(r, c, 'dropY', fromY, pos.y, dur + delay, Easing.easeOutBounce, animDoneCheck);
+                }
+            }
+            onAllAnimsDone = () => {
+                enterState(State.EVALUATING);
+            };
+            break;
+        }
+
+        case State.EVALUATING: {
+            let pendingFreeSpins = false;
+            if (cascadeLevel === 0) {
+                const sc = countScatters(grid);
+                if (sc.count >= 3 && !freeSpins.active) {
+                    const fsCount = CONFIG.SCATTER_FREE_SPINS_BASE + (sc.count - 3) * CONFIG.SCATTER_FREE_SPINS_EXTRA;
+                    pendingFreeSpins = true;
+                    window._pendingFS = { count: fsCount };
+                }
+                if (sc.count >= 3 && freeSpins.active) {
+                    freeSpins.remaining += (sc.count - 3 + 1) * CONFIG.SCATTER_FREE_SPINS_EXTRA;
+                }
+            }
+            const clusters = findClusters(grid);
+            if (clusters.length > 0) {
+                currentClusters = clusters;
+                spinStats.clustersFound += clusters.length;
+                let roundWin = 0;
+                for (const cl of clusters) {
+                    roundWin += calculatePayout(cl, currentBet, globalMultiplier);
+                }
+                totalRoundWin += roundWin;
+                if (freeSpins.active) freeSpins.totalWin += roundWin;
+                globalMultiplier += clusters.length;
+                cascadeLevel++;
+                enterState(State.WIN_DISPLAY);
+            } else {
+                currentClusters = [];
+                lastWin = totalRoundWin;
+                balance += totalRoundWin;
+                trackSpin();
+                if (window._pendingFS) {
+                    spinStats.freeSpinsTriggered = true;
+                    const fs = window._pendingFS;
+                    window._pendingFS = null;
+                    freeSpins = { active: true, remaining: fs.count, totalWin: 0 };
+                    enterState(State.FREE_TRIGGER);
+                } else if (totalRoundWin > currentBet * CONFIG.BIG_WIN_THRESHOLD) {
+                    enterState(State.BIG_WIN);
+                } else {
+                    if (freeSpins.active) {
+                        freeSpins.remaining--;
+                        if (freeSpins.remaining <= 0) {
+                            enterState(State.SUMMARY);
+                        } else {
+                            enterState(State.FREE_IDLE);
+                        }
+                    } else {
+                        globalMultiplier = 1;
+                        enterState(State.IDLE);
+                    }
+                }
+                updateUI();
+            }
+            break;
+        }
+
+        case State.WIN_DISPLAY: {
+            const maxSize = Math.max(...currentClusters.map(c=>c.size));
+            audio.playWin(maxSize);
+            const dur = (turboMode ? 0.4 : 0.8) / speedMul();
+            setTimeout(() => {
+                if (currentState === State.WIN_DISPLAY) enterState(State.REMOVING);
+            }, dur * 1000);
+            for (const cl of currentClusters) {
+                const sym = SYMBOL_DEFS[cl.symbolId];
+                for (const [r,c] of cl.cells) {
+                    const pos = getCellPos(r,c);
+                    const px = pos.x + cellSize/2, py = pos.y + cellSize/2;
+                    particles.emit({
+                        x: px, y: py, count: 3, speed: 80, lifetime: 0.8,
+                        color: sym ? sym.color : '#fff',
+                        gravity: 100, spread: 10, scale: 0.8, shrink: 0.3,
+                        drawFn: sym && sym.type === 'bird' ? particleDrawFns.feather :
+                                sym && sym.type === 'gem' ? particleDrawFns.shard : particleDrawFns.sparkle
+                    });
+                }
+            }
+            updateUI();
+            break;
+        }
+
+        case State.REMOVING: {
+            cellAnims = [];
+            pendingAnimsDone = 0;
+            const allCells = currentClusters.flatMap(cl => cl.cells);
+            pendingAnimsTotal = allCells.length;
+            shake.trigger(4, 0.15);
+            for (const [r,c] of allCells) {
+                addCellAnim(r, c, 'scaleOut', 1, 0, 0.2/speedMul(), Easing.easeInCubic, animDoneCheck);
+            }
+            onAllAnimsDone = () => {
+                const wildPositions = [];
+                for (const cl of currentClusters) {
+                    const wildPos = cl.cells[randInt(0, cl.cells.length-1)];
+                    wildPositions.push(wildPos);
+                    for (const [r,c] of cl.cells) grid.clear(r,c);
+                    grid.set(wildPos[0], wildPos[1], { id: WILD_ID });
+                }
+                for (const wp of wildPositions) {
+                    const pos = getCellPos(wp[0], wp[1]);
+                    particles.emit({
+                        x: pos.x+cellSize/2, y: pos.y+cellSize/2, count: 8, speed: 60,
+                        lifetime: 0.6, color: '#ffcc00', gravity: 50, spread: 5, scale: 0.7,
+                        drawFn: particleDrawFns.sparkle
+                    });
+                }
+                currentClusters = [];
+                enterState(State.CASCADING);
+            };
+            break;
+        }
+
+        case State.CASCADING: {
+            const result = doCascade(grid);
+            cellAnims = [];
+            const allMovements = [...result.movements, ...result.newSymbols.map(ns => ({
+                fromR: ns.fromAbove, fromC: ns.col, toR: ns.row, toC: ns.col, cell: ns.cell
+            }))];
+            pendingAnimsDone = 0;
+            pendingAnimsTotal = Math.max(1, allMovements.length);
+            if (allMovements.length === 0) {
+                enterState(State.EVALUATING);
+                return;
+            }
+            const speed = speedMul();
+            for (const m of allMovements) {
+                const fromPos = getCellPos(m.fromR, m.fromC);
+                const toPos = getCellPos(m.toR, m.toC);
+                const dur = 0.3 / speed;
+                addCellAnim(m.toR, m.toC, 'dropY', fromPos.y, toPos.y, dur, Easing.easeOutBounce, animDoneCheck);
+            }
+            onAllAnimsDone = () => {
+                enterState(State.EVALUATING);
+            };
+            break;
+        }
+
+        case State.FREE_TRIGGER: {
+            document.getElementById('free-spins-counter').classList.add('visible');
+            updateUI();
+            audio.playBigWin();
+            shake.trigger(8, 0.4);
+            for (let i = 0; i < 30; i++) {
+                particles.emit({
+                    x: canvasW/2, y: canvasH/2, count: 1, speed: 200,
+                    lifetime: 1.5, color: ['#ffcc00','#00ffaa','#ff6600'][i%3],
+                    gravity: 100, spread: 100, scale: 1, shrink: 0.3,
+                    drawFn: particleDrawFns.sparkle
+                });
+            }
+            setTimeout(() => {
+                if (currentState === State.FREE_TRIGGER) enterState(State.FREE_IDLE);
+            }, 2000/speedMul());
+            break;
+        }
+
+        case State.FREE_IDLE: {
+            updateUI();
+            setTimeout(() => {
+                if (currentState === State.FREE_IDLE) {
+                    doFreeSpin();
+                }
+            }, 600/speedMul());
+            break;
+        }
+
+        case State.BIG_WIN: {
+            audio.playBigWin();
+            shake.trigger(10, 0.5);
+            document.getElementById('big-win-overlay').classList.add('visible');
+            document.getElementById('big-win-amount').textContent = totalRoundWin.toFixed(2);
+            for (let i = 0; i < 50; i++) {
+                particles.emit({
+                    x: canvasW/2, y: canvasH/2, count: 1, speed: 250,
+                    lifetime: 2, color: ['#ffcc00','#ff6600','#ff3366','#00ff88'][i%4],
+                    gravity: 80, spread: 50, scale: 1.2, shrink: 0.2,
+                    drawFn: [particleDrawFns.coin, particleDrawFns.sparkle][i%2]
+                });
+            }
+            setTimeout(() => {
+                document.getElementById('big-win-overlay').classList.remove('visible');
+                if (freeSpins.active) {
+                    freeSpins.remaining--;
+                    if (freeSpins.remaining <= 0) enterState(State.SUMMARY);
+                    else enterState(State.FREE_IDLE);
+                } else {
+                    globalMultiplier = 1;
+                    enterState(State.IDLE);
+                }
+            }, 3000/speedMul());
+            break;
+        }
+
+        case State.SUMMARY: {
+            freeSpins.active = false;
+            document.getElementById('free-spins-counter').classList.remove('visible');
+            document.getElementById('fs-summary').classList.add('visible');
+            document.getElementById('fs-summary-amount').textContent = freeSpins.totalWin.toFixed(2);
+            globalMultiplier = 1;
+            break;
+        }
+
+        } // end switch
+    }
+
+    function doSpin() {
+        if (currentState !== State.IDLE) return;
+        if (balance < currentBet) return;
+        audio.init();
+        resetSpinStats();
+        balance -= currentBet;
+        updateUI();
+        enterState(State.SPINNING);
+    }
+
+    function doFreeSpin() {
+        if (currentState !== State.FREE_IDLE) return;
+        audio.init();
+        resetSpinStats();
+        totalRoundWin = 0;
+        cascadeLevel = 0;
+        grid.init();
+        if (Math.random() < CONFIG.CLUSTER_SEED_CHANCE + 0.1) seedCluster(grid);
+        audio.playSpin();
+        enterState(State.DROPPING);
+    }
+
+    function doFeatureBuy() {
+        if (currentState !== State.IDLE || freeSpins.active) return;
+        const cost = currentBet * CONFIG.FEATURE_BUY_MULTIPLIER;
+        if (balance < cost) return;
+        audio.init();
+        resetSpinStats();
+        spinStats.isFeatureBuy = true;
+        balance -= cost;
+        totalRoundWin = 0;
+        globalMultiplier = 1;
+        cascadeLevel = 0;
+        lastWin = 0;
+        freeSpins = { active: true, remaining: CONFIG.FEATURE_BUY_FREE_SPINS, totalWin: 0 };
+        updateUI();
+        enterState(State.FREE_TRIGGER);
+    }
+
+    function seedCluster(grid) {
+        const r0 = randInt(0, grid.size-1), c0 = randInt(0, grid.size-1);
+        let symId;
+        do { symId = randomSymbolId(); } while (symId === WILD_ID || symId === SCATTER_ID);
+        const clusterSize = randInt(5, 9);
+        const visited = new Set();
+        const queue = [[r0,c0]];
+        visited.add(`${r0},${c0}`);
+        grid.set(r0, c0, { id: symId });
+        let placed = 1;
+        while (queue.length > 0 && placed < clusterSize) {
+            const [cr,cc] = queue.shift();
+            const neighbors = [[cr-1,cc],[cr+1,cc],[cr,cc-1],[cr,cc+1]];
+            neighbors.sort(() => Math.random()-0.5);
+            for (const [nr,nc] of neighbors) {
+                if (placed >= clusterSize) break;
+                if (nr<0||nr>=grid.size||nc<0||nc>=grid.size) continue;
+                if (visited.has(`${nr},${nc}`)) continue;
+                visited.add(`${nr},${nc}`);
+                grid.set(nr, nc, { id: symId });
+                queue.push([nr,nc]);
+                placed++;
+            }
+        }
+    }
+
+    // ============================================================
+    // MODULE: UI UPDATES
+    // ============================================================
+    function updateUI() {
+        document.getElementById('balance-value').textContent = balance.toFixed(2);
+        document.getElementById('bet-value').textContent = currentBet.toFixed(2);
+        document.getElementById('last-win-value').textContent = lastWin > 0 ? lastWin.toFixed(2) : '0.00';
+        const spinBtn = document.getElementById('spin-btn');
+        const buyBtn = document.getElementById('buy-btn');
+        const isPlaying = currentState !== State.IDLE;
+        spinBtn.disabled = isPlaying && !freeSpins.active;
+        buyBtn.disabled = isPlaying || freeSpins.active || balance < currentBet * CONFIG.FEATURE_BUY_MULTIPLIER;
+        if (freeSpins.active) {
+            spinBtn.classList.add('free-spin');
+            spinBtn.textContent = 'FREE';
+            document.getElementById('fs-remaining').textContent = freeSpins.remaining;
+        } else {
+            spinBtn.classList.remove('free-spin');
+            spinBtn.textContent = 'SPIN';
+        }
+        if (globalMultiplier > 1) {
+            document.getElementById('multiplier-display').classList.add('visible');
+            document.getElementById('multiplier-value').textContent = globalMultiplier;
+        } else {
+            document.getElementById('multiplier-display').classList.remove('visible');
+        }
+        if (currentState === State.WIN_DISPLAY || currentState === State.REMOVING) {
+            document.getElementById('win-display').classList.add('visible');
+            document.getElementById('win-amount').textContent = totalRoundWin.toFixed(2);
+        } else if (currentState !== State.BIG_WIN) {
+            document.getElementById('win-display').classList.remove('visible');
+        }
+    }
+
+    // ============================================================
+    // MODULE: RESIZE & LAYOUT
+    // ============================================================
+    function resize() {
+        dpr = window.devicePixelRatio || 1;
+        const vw = window.innerWidth, vh = window.innerHeight;
+        canvasW = vw;
+        canvasH = vh;
+        for (const c of [bgCanvas, gameCanvas]) {
+            c.width = vw * dpr;
+            c.height = vh * dpr;
+            c.style.width = vw + 'px';
+            c.style.height = vh + 'px';
+            c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+        const controlPanelH = 90;
+        const topBarH = 60;
+        const availH = vh - controlPanelH - topBarH - 50;
+        const availW = vw - 60;
+        const gridDim = CONFIG.GRID_SIZE;
+        cellSize = Math.floor(Math.min(availW / gridDim, availH / gridDim) - CONFIG.CELL_GAP);
+        cellSize = Math.min(cellSize, 85);
+        cellSize = Math.max(cellSize, 40);
+        const totalGridW = gridDim * (cellSize + CONFIG.CELL_GAP) - CONFIG.CELL_GAP;
+        const totalGridH = totalGridW;
+        gridOffsetX = (vw - totalGridW) / 2;
+        gridOffsetY = topBarH + (availH - totalGridH) / 2 + 5;
+        preRenderSymbols();
+        drawBackground();
+    }
+
+    // ============================================================
+    // MODULE: MAIN GAME LOOP
+    // ============================================================
+    let lastTime = 0;
+    let gameTime = 0;
+
+    function gameLoop(timestamp) {
+        const dt = Math.min((timestamp - lastTime) / 1000, 0.05);
+        lastTime = timestamp;
+        gameTime += dt;
+        updateAnims(dt);
+        particles.update(dt);
+        shake.update(dt);
+        stateTimer += dt;
+        if (!ambientEmitter && particles.emitters.length < 3) {
+            particles.addEmitter({
+                config: {
+                    x: gridOffsetX + (CONFIG.GRID_SIZE*(cellSize+CONFIG.CELL_GAP))/2,
+                    y: gridOffsetY + (CONFIG.GRID_SIZE*(cellSize+CONFIG.CELL_GAP))/2,
+                    count: 1, speed: 15, lifetime: 3,
+                    color: 'rgba(255,255,200,0.6)', gravity: -10,
+                    spread: CONFIG.GRID_SIZE*(cellSize+CONFIG.CELL_GAP)*0.5,
+                    scale: 0.5, shrink: 0.1,
+                    drawFn: particleDrawFns.sparkle
+                },
+                interval: 0.3, duration: -1, elapsed: 0, totalElapsed: 0
+            });
+        }
+        const ctx = gameCtx;
+        ctx.clearRect(0, 0, canvasW, canvasH);
+        ctx.save();
+        ctx.translate(shake.ox, shake.oy);
+        drawGrid(ctx, gameTime);
+        drawSymbols(ctx, gameTime);
+        drawWinGlows(ctx, gameTime);
+        ctx.restore();
+        particles.draw(ctx);
+        requestAnimationFrame(gameLoop);
+    }
+
+    // ============================================================
+    // MODULE: INPUT HANDLERS
+    // ============================================================
+    function setupInput() {
+        document.getElementById('spin-btn').addEventListener('click', () => {
+            if (freeSpins.active) return;
+            doSpin();
+        });
+        document.getElementById('bet-down').addEventListener('click', () => {
+            if (currentState !== State.IDLE) return;
+            audio.init(); audio.playClick();
+            betIndex = Math.max(0, betIndex - 1);
+            currentBet = CONFIG.BET_LEVELS[betIndex];
+            updateUI();
+        });
+        document.getElementById('bet-up').addEventListener('click', () => {
+            if (currentState !== State.IDLE) return;
+            audio.init(); audio.playClick();
+            betIndex = Math.min(CONFIG.BET_LEVELS.length - 1, betIndex + 1);
+            currentBet = CONFIG.BET_LEVELS[betIndex];
+            updateUI();
+        });
+        document.getElementById('turbo-btn').addEventListener('click', () => {
+            audio.init(); audio.playClick();
+            turboMode = !turboMode;
+            document.getElementById('turbo-btn').classList.toggle('active', turboMode);
+        });
+        document.getElementById('auto-btn').addEventListener('click', () => {
+            audio.init(); audio.playClick();
+            autoSpin = !autoSpin;
+            document.getElementById('auto-btn').classList.toggle('active', autoSpin);
+            if (autoSpin && currentState === State.IDLE) doSpin();
+        });
+        document.getElementById('mute-btn').addEventListener('click', () => {
+            audio.init();
+            audio.setMuted(!audio.muted);
+            document.getElementById('mute-btn').classList.toggle('active', !audio.muted);
+        });
+        document.getElementById('fs-summary-btn').addEventListener('click', () => {
+            document.getElementById('fs-summary').classList.remove('visible');
+            enterState(State.IDLE);
+        });
+        document.getElementById('buy-btn').addEventListener('click', () => {
+            if (currentState !== State.IDLE || freeSpins.active) return;
+            audio.init(); audio.playClick();
+            const cost = currentBet * CONFIG.FEATURE_BUY_MULTIPLIER;
+            if (balance < cost) return;
+            document.getElementById('buy-modal-cost').textContent = cost.toFixed(2);
+            document.getElementById('buy-modal').classList.add('visible');
+        });
+        document.getElementById('buy-confirm').addEventListener('click', () => {
+            audio.init(); audio.playClick();
+            document.getElementById('buy-modal').classList.remove('visible');
+            doFeatureBuy();
+        });
+        document.getElementById('buy-cancel').addEventListener('click', () => {
+            audio.init(); audio.playClick();
+            document.getElementById('buy-modal').classList.remove('visible');
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && currentState === State.IDLE && !freeSpins.active) {
+                e.preventDefault();
+                doSpin();
+            }
+        });
+    }
+
+    // ============================================================
+    // MODULE: INITIALIZATION
+    // ============================================================
+    function init() {
+        bgCanvas = document.getElementById('bgCanvas');
+        bgCtx = bgCanvas.getContext('2d');
+        gameCanvas = document.getElementById('gameCanvas');
+        gameCtx = gameCanvas.getContext('2d');
+        grid = new GridModel(CONFIG.GRID_SIZE);
+        resize();
+        setupInput();
+        updateUI();
+        lastTime = performance.now();
+        requestAnimationFrame(gameLoop);
+    }
+
+    window.addEventListener('resize', resize);
+    init();
+
+    // Cleanup on unmount
+    return () => {
+        window.removeEventListener('resize', resize);
+    };
+  }, []);
+
+  return (
+    <>
+      <canvas id="bgCanvas"></canvas>
+      <canvas id="gameCanvas"></canvas>
+
+      <div id="ui-overlay">
+        <div id="top-bar">
+          <div id="game-logo">PIROTS</div>
+          <div id="multiplier-display">x<span id="multiplier-value">1</span></div>
+          <div id="free-spins-counter">FREE SPINS: <span id="fs-remaining">0</span></div>
+        </div>
+
+        <div id="win-display">
+          <div id="win-label">WIN</div>
+          <div id="win-amount">0.00</div>
+        </div>
+
+        <div id="big-win-overlay">
+          <div id="big-win-text">BIG WIN</div>
+          <div id="big-win-amount">0.00</div>
+        </div>
+
+        <div id="fs-summary">
+          <div id="fs-summary-title">FREE SPINS COMPLETE</div>
+          <div id="fs-summary-amount">0.00</div>
+          <button id="fs-summary-btn">CONTINUE</button>
+        </div>
+
+        <div id="buy-modal">
+          <div id="buy-modal-title">BUY FREE SPINS</div>
+          <div id="buy-modal-desc">Skip straight to the Free Spins bonus round!<br/>Cost: 100x your current bet</div>
+          <div id="buy-modal-cost">100.00</div>
+          <div id="buy-modal-btns">
+            <button className="buy-modal-btn" id="buy-cancel">CANCEL</button>
+            <button className="buy-modal-btn" id="buy-confirm">BUY</button>
+          </div>
+        </div>
+
+        <div id="control-panel">
+          <div className="panel-section">
+            <div className="panel-label">Balance</div>
+            <div className="panel-value" id="balance-value">1000.00</div>
+          </div>
+          <div className="divider"></div>
+          <button className="btn-control" id="bet-down">&minus;</button>
+          <div className="panel-section" style={{minWidth:'60px'}}>
+            <div className="panel-label">Bet</div>
+            <div className="panel-value" id="bet-value">1.00</div>
+          </div>
+          <button className="btn-control" id="bet-up">+</button>
+          <div className="divider"></div>
+          <button className="btn-spin" id="spin-btn">SPIN</button>
+          <div className="divider"></div>
+          <div className="panel-section">
+            <div className="panel-label">Win</div>
+            <div className="panel-value win-highlight" id="last-win-value">0.00</div>
+          </div>
+          <div className="divider"></div>
+          <button className="btn-buy" id="buy-btn" title="Buy Free Spins">BUY</button>
+          <div className="divider"></div>
+          <button className="btn-control" id="turbo-btn" title="Turbo">&#9889;</button>
+          <button className="btn-control" id="auto-btn" title="Auto Spin">&#8635;</button>
+          <button className="btn-control" id="mute-btn" title="Sound">&#9834;</button>
+        </div>
+      </div>
+    </>
+  );
+}
